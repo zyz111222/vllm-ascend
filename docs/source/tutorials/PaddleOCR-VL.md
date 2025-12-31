@@ -57,6 +57,7 @@ PaddleOCR-VL supports single-node single-card deployment on the 910B4 platform. 
 
 1. Prepare model weights: Ensure the downloaded model weights are stored in the `PaddleOCR-VL` directory.
 2. Create and execute the deployment script (save as `deploy.sh`):
+
 ```shell
 #!/bin/sh
 export VLLM_USE_MODELSCOPE=true
