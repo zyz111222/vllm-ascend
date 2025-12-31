@@ -91,7 +91,7 @@ INFO:     Application startup complete.
 
 Once your server is started, you can use the OpenAI API client to make queries.
 
-```bash
+```python
 from openai import OpenAI
 
 client = OpenAI(
@@ -159,13 +159,13 @@ Use separate virtual environments for VLLM and PPdoclayoutV2 to prevent dependen
 
 ### Pull the PaddlePaddle-compatible CANN image
 
-```
+```bash
 docker pull ccr-2vdh3abv-pub.cnc.bj.baidubce.com/device/paddle-npu:cann800-ubuntu20-npu-910b-base-aarch64-gcc84
 ```
 
 Start the container using the following command:
 
-```
+```bash
 docker run -it --name paddle-npu-dev -v $(pwd):/work \
     --privileged --network=host --shm-size=128G -w=/work \
     -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
@@ -188,21 +188,21 @@ pip install safetensors
 :::{note}
 The OpenCV component may be missing：
 
-```
+```bash
 apt-get update
 apt-get install -y libgl1 libglib2.0-0
 ```
 
 CANN-8.0.0 does not support some versions of NumPy and OpenCV. It is recommended to install the specified versions.
 
-```
+```bash
 python -m pip install numpy==1.26.4
 python -m pip install opencv-python==3.4.18.65
 ```
 
 ### Using vLLM as the backend, combined with PP-DocLayoutV2 for offline inference
 
-```
+```python
 from paddleocr import PaddleOCRVL
 
 doclayout_model_path = "/path/to/your/PP-DocLayoutV2/"
