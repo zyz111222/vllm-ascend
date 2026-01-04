@@ -16,7 +16,7 @@ Refer to [feature guide](https://docs.vllm.ai/projects/ascend/en/latest/user_gui
 
 ### Model Weight
 
-* `PaddleOCR-VL-0.9B`：require 1 910B4 cards(32G × 1). [PaddleOCR-VL-0.9B](https://www.modelscope.cn/models/PaddlePaddle/PaddleOCR-VL)
+* `PaddleOCR-VL-0.9B`：require an 800 I A2 server. [PaddleOCR-VL-0.9B](https://www.modelscope.cn/models/PaddlePaddle/PaddleOCR-VL)
 
 It is recommended to download the model weights to a local directory (e.g., `./PaddleOCR-VL`) for quick access during deployment.
 
