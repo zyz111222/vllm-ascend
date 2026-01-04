@@ -72,6 +72,7 @@ Get the latest info here: https://github.com/vllm-project/vllm-ascend/issues/160
 | Mistral3                       | ✅            |                                                                      |||||||||||||||||||
 | Phi-3-Vision/Phi-3.5-Vision      | ✅            |                                                                      |||||||||||||||||||
 | Gemma3                         | ✅            |                                                                      |||||||||||||||||||
+| PaddleOCR-VL                   | ✅            |                                                                      ||||||||||||||||||||
 | Llama4                         | ❌            | [1972](https://github.com/vllm-project/vllm-ascend/issues/1972)      |||||||||||||||||||
 | Llama3.2                       | ❌            | [1972](https://github.com/vllm-project/vllm-ascend/issues/1972)      |||||||||||||||||||
 | Keye-VL-8B-Preview             | ❌            | [1963](https://github.com/vllm-project/vllm-ascend/issues/1963)      |||||||||||||||||||
