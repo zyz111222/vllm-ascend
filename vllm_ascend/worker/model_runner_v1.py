@@ -232,6 +232,9 @@ class NPUModelRunner(GPUModelRunner):
         vllm_config.scheduler_config.max_num_batched_tokens += max_pcp_pad_tokens
         with _torch_cuda_wrapper():
             super().__init__(vllm_config, device)
+        self.input_copy_stream: torch.npu.Stream = torch.npu.Stream(device=device)
+        self.input_copy_done_event: torch.npu.Event = torch.npu.Event()
+        self._input_copy_event_pending = False
 
         # NOTE: For FULL mode we change +1 to +2 to reserve extra space for padding.
         # See _pad_query_start_loc_for_fia.
@@ -425,6 +428,19 @@ class NPUModelRunner(GPUModelRunner):
         self.mamba_state_idx: dict[str, int] = {}
         self._mamba_copy_bufs: mamba_utils.MambaCopyBuffers | None = None
 
+    @contextmanager
+    def synchronize_input_prep(self):
+        if self.prepare_inputs_event is not None:
+            self.prepare_inputs_event.synchronize()
+        if self._input_copy_event_pending:
+            self.input_copy_done_event.synchronize()
+            self._input_copy_event_pending = False
+        try:
+            yield
+        finally:
+            if self.prepare_inputs_event is not None:
+                self.prepare_inputs_event.record()
+
     @property
     def use_cp(self) -> bool:
         return self.pcp_size * self.dcp_size > 1
@@ -614,7 +630,8 @@ class NPUModelRunner(GPUModelRunner):
 
         # OPTIMIZATION: Start copying the block table first.
         # This way, we can overlap the copy with the following CPU operations.
-        self.input_batch.block_table.commit_block_table(num_reqs)
+        with torch.npu.stream(self.input_copy_stream):
+            self.input_batch.block_table.commit_block_table(num_reqs)
 
         req_indices = np.repeat(self.arange_np[:num_reqs], num_scheduled_tokens)
 
@@ -642,7 +659,8 @@ class NPUModelRunner(GPUModelRunner):
         np.add(self.input_batch.num_computed_tokens_cpu[req_indices], arange, out=positions_np)
 
         self.input_batch.block_table.compute_slot_mapping(req_indices, positions_np)
-        self.input_batch.block_table.commit_slot_mapping(total_num_scheduled_tokens)
+        with torch.npu.stream(self.input_copy_stream):
+            self.input_batch.block_table.commit_slot_mapping(total_num_scheduled_tokens)
 
         if self.use_cp:
             self.pcp_manager.init_batch_info(
@@ -762,32 +780,37 @@ class NPUModelRunner(GPUModelRunner):
 
         self.seq_lens.np[:num_reqs] = self.input_batch.num_computed_tokens_cpu[:num_reqs] + num_scheduled_tokens
         self.seq_lens.cpu[num_reqs:].fill_(0)
-        self.seq_lens.copy_to_gpu()
+        with torch.npu.stream(self.input_copy_stream):
+            self.seq_lens.copy_to_gpu()
 
         # Fill unused with -1. Needed for reshape_and_cache in attention_cp
         self.query_start_loc.gpu[num_reqs + 1 :].fill_(-1)
 
         # Copy the tensors to the NPU.
-        self._prepare_input_ids(scheduler_output, total_num_scheduled_tokens, cu_num_tokens)
+        with torch.npu.stream(self.input_copy_stream):
+            self._prepare_input_ids(scheduler_output, total_num_scheduled_tokens, cu_num_tokens)
         # Calculate M-RoPE positions.
         # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
         if self.uses_mrope:
             # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
             self._calc_mrope_positions(scheduler_output)
-            self.mrope_positions.gpu.copy_(
-                self.mrope_positions.cpu,
-                non_blocking=True,
-            )
+            with torch.npu.stream(self.input_copy_stream):
+                self.mrope_positions.gpu.copy_(
+                    self.mrope_positions.cpu,
+                    non_blocking=True,
+                )
         elif self.uses_xdrope_dim > 0:
             self._calc_xdrope_positions(scheduler_output)
             # Only relevant for models using XD-RoPE (e.g, HunYuan-VL)
-            self.xdrope_positions.gpu[:, :total_num_scheduled_tokens].copy_(
-                self.xdrope_positions.cpu[:, :total_num_scheduled_tokens],
-                non_blocking=True,
-            )
+            with torch.npu.stream(self.input_copy_stream):
+                self.xdrope_positions.gpu[:, :total_num_scheduled_tokens].copy_(
+                    self.xdrope_positions.cpu[:, :total_num_scheduled_tokens],
+                    non_blocking=True,
+                )
         else:
             # Common case (1D positions)
-            self.positions.copy_to_gpu(total_num_scheduled_tokens)
+            with torch.npu.stream(self.input_copy_stream):
+                self.positions.copy_to_gpu(total_num_scheduled_tokens)
 
         # Record the index of requests that should not be sampled,
         # so that we could clear the sampled tokens before returning
@@ -810,7 +833,10 @@ class NPUModelRunner(GPUModelRunner):
         discard_request_indices = np.nonzero(discard_requests_mask)[0]
         self.num_discarded_requests = len(discard_request_indices)
         self.discard_request_indices.np[: self.num_discarded_requests] = discard_request_indices
-        self.discard_request_indices.copy_to_gpu(self.num_discarded_requests)
+        with torch.npu.stream(self.input_copy_stream):
+            self.discard_request_indices.copy_to_gpu(self.num_discarded_requests)
+            self.input_copy_done_event.record(self.input_copy_stream)
+        self._input_copy_event_pending = True
         use_spec_decode = len(scheduler_output.scheduled_spec_decode_tokens) > 0
         if not use_spec_decode:
             # NOTE(woosuk): Due to chunked prefills, the batch may contain
@@ -1298,6 +1324,9 @@ class NPUModelRunner(GPUModelRunner):
                         if num_reqs_padded > old_num_reqs_padded:
                             num_reqs_padded = old_num_reqs_padded
                             self.query_start_loc.np[num_reqs_padded + 1] = 0
+
+                if self._input_copy_event_pending:
+                    torch.npu.current_stream().wait_event(self.input_copy_done_event)
 
                 (attn_metadata, spec_decode_common_attn_metadata) = self._build_attention_metadata(
                     num_tokens=num_tokens_unpadded
