@@ -321,6 +321,10 @@
 #       grouping through `vllm_ascend.core.kv_cache_config_builder`, selected
 #       by `NPUPlatform.get_kv_cache_config_builder_cls`; its default
 #       materialization delegates back to these patched functions.
+#       DSV4.1 HiSparse uses Core's host/device materialization instead of the
+#       ordinary V4.1 composite-slot planner; OFF keeps its original layout.
+#       This development bridge follows Core #65905/#65970 and can be removed
+#       when the upstream builder dispatches host-backed V4.1 directly.
 #    Related PR (if no, explain why):
 #       https://github.com/vllm-project/vllm/pull/53558
 #    Future Plan:

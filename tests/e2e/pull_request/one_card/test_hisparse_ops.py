@@ -629,7 +629,7 @@ def test_random_request_unions(capture):
         mapping.close()
 
 
-@pytest.mark.parametrize("rows,topk,row_bytes", [(1, 17, 656), (4, 2048, 656), (16, 2048, 1152)])
+@pytest.mark.parametrize("rows,topk,row_bytes", [(1, 17, 656), (4, 2048, 656), (16, 2048, 1152), (6, 512, 320)])
 @pytest.mark.parametrize("capture", [False, True])
 def test_compact_refill_tiles_current_counts_and_preserves_page_gaps(rows, topk, row_bytes, capture):
     block = 128

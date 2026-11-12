@@ -488,6 +488,10 @@ def _ascend_get_packed_kv_cache_groups(
 ) -> list[KVCacheGroupSpec] | None:
     """Preserve Ascend's DSV4 grouping on the live packed-group hook."""
     if is_deepseek_v41_cache(kv_cache_spec):
+        if vllm_config.attention_config.hisparse_config is not None:
+            from vllm_ascend.models.deepseek_v41.hisparse import cache_groups
+
+            return cache_groups(vllm_config, kv_cache_spec)
         grouped_specs = group_cache_specs(kv_cache_spec)
         groups = make_cache_groups(grouped_specs)
     else:
@@ -658,7 +662,7 @@ def _ascend_pool_bytes_per_block(  # type: ignore[misc]
     """
     if tq_cache.uses_turboquant_groups(kv_cache_groups):
         return tq_cache.pool_bytes_per_block(kv_cache_groups)
-    if is_deepseek_v41_cache(kv_cache_groups):
+    if is_deepseek_v41_cache(kv_cache_groups) and vllm_config.attention_config.hisparse_config is None:
         return get_deepseek_v41_pool_bytes_per_block(kv_cache_groups)
     if _get_glm5_next_cache_layout(kv_cache_groups) is not None:
         return get_glm5_next_pool_bytes_per_block(kv_cache_groups)
@@ -787,7 +791,7 @@ def _ascend_get_kv_cache_config_from_groups(
     )
     if qwen_config is not None:
         kv_cache_config = qwen_config
-    elif is_deepseek_v41_cache(kv_cache_groups):
+    elif is_deepseek_v41_cache(kv_cache_groups) and vllm_config.attention_config.hisparse_config is None:
         kv_cache_config = get_deepseek_v41_kv_cache_config(vllm_config, kv_cache_groups, available_memory)
     elif _get_glm5_next_cache_layout(kv_cache_groups) is not None:
         kv_cache_config = get_glm5_next_kv_cache_config(vllm_config, kv_cache_groups, available_memory)

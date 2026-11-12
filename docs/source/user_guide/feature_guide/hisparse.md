@@ -59,6 +59,51 @@ For native A5 C8, replace the two dtype options with:
 | `device_buffer_size` | Per-request Hot capacity from Core's HiSparse configuration. It must cover the selected verification-row union. |
 | `kv_cache_dtype` / `indexer_kv_dtype` | Select main and Indexer KV formats independently from model-weight quantization. |
 
+## DeepSeek V4.1 shared compressed sources (development)
+
+The local V4.1 integration follows upstream [#65905](https://github.com/vllm-project/vllm/pull/65905)
+and [#65970](https://github.com/vllm-project/vllm/pull/65970). It requires the paired
+Core compressed-page patch as well as this Ascend branch. The initial target is
+Ascend 950, Model Runner V2, PCP1/DCP1, using the model's existing 320-byte MXFP4
+main KV, 68-byte indexer rows, and 544-byte SWA rows. This path does not use the
+legacy sparse-offload fusion operators or the SM90 split-page CUDA kernels.
+
+Add these options to the normal V4.1 serving command (keep its weight quantization
+and Engram configuration unchanged):
+
+```bash
+export VLLM_USE_V2_MODEL_RUNNER=1
+export VLLM_KV_CACHE_LAYOUT=BLHNC
+# Additional vllm serve arguments:
+--block-size 128 \
+--attention-config '{"hisparse_config":{"device_buffer_size":4096,"eager_host_mirror":true}}' \
+--kv-transfer-config '{"kv_connector":"HiSparseConnector","kv_role":"kv_both","kv_connector_extra_config":{"host_pool_gib":64,"dsv41_sources":[20]}}'
+```
+
+`dsv41_sources` selects main-KV owners from `[2,8,14,20]`, defaulting to `[20]`.
+Indexer K, folded index K, SWA, compressor state, and unselected main sources stay
+on device. `[2,20]` and all four owners are also exposed for capacity/transfer
+comparisons. Reduced backbones must explicitly select owners they contain.
+
+C2 keeps 64 physical rows per logical 128-token page; C1 keeps 128. Only complete
+C2 groups are mirrored. Replay skip-update and graph padding masks are retained.
+The five index groups reading source 20 resolve sequentially: each group waits
+for the previous attention read before it can evict Hot rows. With DSpark5,
+4096 Hot rows cover the per-group worst-case union of `6*512` rows. The output
+workspace retains all five groups' mappings. Nonresident Prefill stages historical
+source pages once per forward and shares that binding across its consumer groups.
+
+CPU layout, byte-address, write-mask, and allocator regression tests are available.
+The NPU tests cover real mapped-host refills, C1/C2, five independent groups,
+single/verification queries, physical-index attention, and graph replay. Device
+and full-model qualification must be recorded before claiming this development
+path is validated. No DSV4.1 throughput benefit has yet been established.
+
+A large logical offload volume does not guarantee a smaller physical slab. The
+current shared-pool stride is still bounded by the compressor-state group; report
+layout/padding changes separately from offload and compare identical serving
+configurations under measured mean TPOT limits.
+
 ## Capacity and correctness notes
 
 The resolver preserves the complete MTP query-row union before choosing LRU

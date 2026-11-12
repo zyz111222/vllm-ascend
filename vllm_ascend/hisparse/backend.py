@@ -166,6 +166,11 @@ class AscendHiSparseBackend(HiSparseBackend):
         )
         if prepared is not None:
             del runtime._ascend_profiled_cache_ops
+        if getattr(runtime, "_ascend_v41_source", False):
+            from vllm_ascend.models.deepseek_v41.hisparse import prepare_source_attention
+
+            # The ops are constructed while the profiling allocation is live.
+            prepare_source_attention(runtime._ascend_v41_handle)
         return ops
 
     def validate_kv_cache_config(self, kv_cache_config: KVCacheConfig) -> None:
@@ -182,6 +187,9 @@ class AscendHiSparseBackend(HiSparseBackend):
         from .binding import _bind_indexer_views, get_hisparse_indexer_specs
 
         _bind_indexer_views(kv_caches, get_hisparse_indexer_specs(kv_cache_config), forward_context)
+        from vllm_ascend.models.deepseek_v41.hisparse import prepare_cache_views
+
+        prepare_cache_views(kv_cache_config, kv_caches)
 
     def is_current_stream_capturing(self) -> bool:
         return torch.npu.is_current_stream_capturing()

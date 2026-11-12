@@ -229,6 +229,7 @@ class AscendDSAV41Metadata(AttentionMetadata):
     c2_source_sin: torch.Tensor | None = None
     c2_metadata_group_id: int | None = None
     global_metadata: "AscendDSAV41Metadata | None" = None
+    req_id_per_token: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -632,7 +633,18 @@ class AscendDSAV41Impl:
         latent = latent.view(-1, 1, attn.head_dim)
         AscendDSAV41Impl._apply_rotary(attn, latent, source_cos, source_sin)
         backend = getattr(attn, "packed_cache_ops", None)
-        if backend is not None:
+        handle = getattr(attn.long_kv_cache, "hisparse_cache", None)
+        if handle is not None:
+            from vllm_ascend.models.deepseek_v41.hisparse import finish_source_write, resident_write_slots
+
+            backend.write_attention_cache(
+                handle.view.cache.unsqueeze(2),
+                resident_write_slots(handle.slot_mapping, compressor_metadata.cache)[: positions.shape[0]],
+                latent.squeeze(1),
+                kind="cmp",
+            )
+            finish_source_write(handle, compressor_metadata.cache)
+        elif backend is not None:
             backend.write_attention_cache(
                 attn.long_kv_cache.kv_cache[0],
                 compressor_metadata.cache.flat_slot_mapping[: positions.shape[0]],
@@ -697,9 +709,30 @@ class AscendDSAV41Impl:
         if source_cache is None and self.role.has_long_context:
             source_cache = get_forward_context().no_compile_layers[self.long_kv_source_prefix].kv_cache[0]
         backend = getattr(attn, "packed_cache_ops", None)
-        if backend is not None:
+        handle = (
+            getattr(get_forward_context().no_compile_layers[self.long_kv_source_prefix], "hisparse_cache", None)
+            if self.role.has_long_context
+            else None
+        )
+        if handle is not None:
+            from vllm_ascend.models.deepseek_v41.hisparse import resolve_attention
+
+            source_cache, attention_metadata, compressed_indices, compressed_lengths = resolve_attention(
+                handle,
+                metadata.attention,
+                compressed_indices,
+                new_index_group=self.role.is_index_source,
+                logical_lengths=(
+                    None if attn.shared_state.topk_lengths is None else attn.shared_state.topk_lengths[: q.shape[0]]
+                ),
+            )
+            # Each caller keeps its own SWA/query metadata; only compressed
+            # addressing is replaced by the current source/index-group binding.
+            metadata = replace(metadata, attention=attention_metadata)
+        else:
             compressed_lengths = None
-            if self.role.has_long_context and attn.shared_state.topk_lengths is not None:
+        if backend is not None:
+            if handle is None and self.role.has_long_context and attn.shared_state.topk_lengths is not None:
                 compressed_lengths = attn.shared_state.topk_lengths[: q.shape[0]]
             return backend.qsmla(
                 q,
@@ -803,6 +836,12 @@ class AscendDSAV41Impl:
                 projector._forward_o_proj(o_proj_input, output)
             return output
         metadata = self._get_layer_metadata(forward_context.attn_metadata)
+        if self.role.is_kv_source:
+            handle = getattr(attn.long_kv_cache, "hisparse_cache", None)
+            if handle is not None:
+                from vllm_ascend.models.deepseek_v41.hisparse import prepare_source_batch
+
+                prepare_source_batch(handle, metadata.attention)
         q, qr, prepared_indexer = self._prepare_inputs_and_caches(
             attn, hidden_states, metadata, forward_context.attn_metadata
         )
@@ -889,6 +928,16 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         self._flat_slot_mapping = torch.full((max_tokens,), -1, dtype=torch.int64, device=device)
         self._seq_lens = torch.zeros(max_reqs, dtype=torch.int32, device=device)
         self._max_tokens = max_tokens
+        self._hisparse_request_ids = (
+            torch.empty(max_tokens, dtype=torch.int32, device=device)
+            if vllm_config.attention_config.hisparse_config is not None and self._cache_kind == "long_kv"
+            else None
+        )
+        self._hisparse_token_rows = (
+            torch.arange(max_tokens, dtype=torch.int32, device=device)
+            if self._hisparse_request_ids is not None
+            else None
+        )
         self._dspark_swa_indices = None
         self._dspark_swa_lengths = None
         self._cache_seq_lens = torch.zeros(max_reqs, dtype=torch.int32, device=device)
@@ -1051,6 +1100,14 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
         values = dict(self.common_v41_batch_metadata["batch"])
         values.update(self._request_counts_metadata)
         values["cache_seq_lens"] = values["seq_lens"]
+        if self._hisparse_request_ids is not None:
+            from vllm_ascend.models.deepseek_v41.hisparse import build_request_ids
+
+            build_request_ids(
+                self._hisparse_token_rows[:num_tokens],
+                common.query_start_loc[: num_reqs + 1],
+                self._hisparse_request_ids[:num_tokens],
+            )
 
         return AscendDSAV41Metadata(
             block_table=common.block_table_tensor[:num_reqs],
@@ -1070,6 +1127,9 @@ class AscendDSAV41MetadataBuilder(AttentionMetadataBuilder[AscendDSAV41Metadata]
             attn_state=getattr(common, "attn_state", None),
             is_prefilling=getattr(common, "is_prefilling", None),
             causal=getattr(common, "causal", True),
+            req_id_per_token=(
+                self._hisparse_request_ids[:num_tokens] if self._hisparse_request_ids is not None else None
+            ),
             **values,
         )
 
