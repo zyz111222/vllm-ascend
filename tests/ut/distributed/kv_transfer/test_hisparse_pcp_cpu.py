@@ -49,7 +49,8 @@ def handle():
     return cache
 
 
-def test_pcp_workspace_uses_supported_sfa_kernel_pages(monkeypatch):
+@pytest.mark.parametrize("dtype", [torch.int8, torch.float8_e4m3fn])
+def test_pcp_workspace_uses_supported_sfa_kernel_pages(monkeypatch, dtype):
     from vllm_ascend.attention import sfa_hisparse
     from vllm_ascend.attention.sfa_v1 import AscendSFABackend
 
@@ -57,6 +58,7 @@ def test_pcp_workspace_uses_supported_sfa_kernel_pages(monkeypatch):
     assert AscendSFABackend.get_supported_kernel_block_sizes() == [block_size]
     impl = sfa_hisparse.AscendHiSparseImpl.__new__(sfa_hisparse.AscendHiSparseImpl)
     impl._kv_staging_capacity = 2 * block_size
+    impl.c8_cache_dtype = dtype
     impl.index_group = NS(logical_topk_indices=torch.empty(1))
     monkeypatch.setattr(
         sfa_hisparse,
@@ -65,7 +67,7 @@ def test_pcp_workspace_uses_supported_sfa_kernel_pages(monkeypatch):
     )
     scratch, slots = impl._pcp_prolog_workspace()
     assert scratch.shape == (2, block_size, 1, sfa_hisparse.C8_ROW_BYTES)
-    assert scratch.dtype == torch.float8_e4m3fn
+    assert scratch.dtype == dtype
     assert scratch.is_contiguous()
     torch.testing.assert_close(slots, torch.arange(2 * block_size, dtype=torch.int64))
 
